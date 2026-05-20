@@ -1,4 +1,4 @@
-# 🚀 Instagram Reels Sorter v3.0
+# 🚀 Instagram Reels Sorter
 
 [![JavaScript](https://img.shields.io/badge/JavaScript-Vanilla-yellow.svg)](https://developer.mozilla.org/en-US/docs/Web/JavaScript)
 [![No Dependencies](https://img.shields.io/badge/Dependencies-None-brightgreen.svg)]()
