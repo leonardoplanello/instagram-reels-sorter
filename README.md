@@ -8,8 +8,8 @@
 
 Whether you are a social media manager, content creator, or data analyst, this script provides an effortless way to scrape Instagram Reels views, likes, and URLs, outputting a cleanly formatted CSV file sorted by highest views.
 
-<img width="297" height="520" alt="Screenshot 2026-05-20 142758" src="https://github.com/user-attachments/assets/dbc7784f-ea78-4dfd-9be9-0aebeef6939d" />
-<img width="1366" height="605" alt="Screenshot 2026-05-20 142957" src="https://github.com/user-attachments/assets/3616ed2c-589b-4c73-9cd2-1c13d92c15cf" />
+<img width="1366" height="605" alt="Screenshot 2026-05-20 143222" src="https://github.com/user-attachments/assets/27c5fdc4-16d5-4a2c-ab9b-4e068165042e" />
+<img width="1366" height="610" alt="Screenshot 2026-05-20 143234" src="https://github.com/user-attachments/assets/a72230cf-3fa7-416a-a25d-adfe6dfbbc4a" />
 
 ## ✨ Key Features
 
