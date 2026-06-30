@@ -1,13 +1,13 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
- *  INSTAGRAM REELS SORTER  v7.0
+ *  INSTAGRAM REELS SORTER  v7.1
  *  Scrapes: URL · Views · Likes
- *  Exports: CSV ordered by views
+ *  Exports: CSV ordered by views or likes
  * 
  *  FEATURES:
  *  ✓ Restored the beautiful, drag-and-drop HUD interface & Wave FX.
  *  ✓ Removed blocked Web Worker (Fixes frozen timer/0 scrolls).
- *  ✓ Robust Likes & Views extraction from image alt-text.
+ *  ✓ Ultra-robust Likes & Views extraction from DOM attributes, icons, & text.
  *  ✓ Aggressive scrolling engine (reaches the true bottom).
  *  ✓ Fully translated UI and Logs to English.
  * ╔══════════════════════════════════════════════════════════════╗
@@ -35,6 +35,7 @@
      STATE
   ════════════════════════════════════════════════════════════ */
   var state = {
+    mode:             'reels',
     reels:            {},
     scrollCount:      0,
     staleCycles:      0,
@@ -95,45 +96,110 @@
     var pad = function (n) { return String(n).padStart(2, '0'); };
     var date = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
     var profile = state.profileName ? '@' + state.profileName + '_' : '';
-    return 'reels_' + profile + date + '.csv';
+    var prefix = state.mode === 'posts' ? 'posts_' : 'reels_';
+    return prefix + profile + date + '.csv';
   }
 
   /* ════════════════════════════════════════════════════════════
      DOM DATA EXTRACTION (v7 Robust Logic)
   ════════════════════════════════════════════════════════════ */
+  function isReelElement(a) {
+    if (!a || !a.href) return false;
+    if (a.href.indexOf('/reel/') !== -1) return true;
+    var svgs = a.querySelectorAll('svg, [role="img"], [aria-label], [title]');
+    for (var j = 0; j < svgs.length; j++) {
+      var el = svgs[j];
+      if (el.tagName && el.tagName.toLowerCase() === 'img') continue;
+      var txt = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.textContent || '');
+      if (/reel|clip|clipe|vídeo do reels/i.test(txt)) return true;
+    }
+    return false;
+  }
+
   function collectFromDOM() {
     var added = 0;
-    var links = document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]');
+    var selector = state.mode === 'posts' ? 'a[href*="/p/"]' : 'a[href*="/reel/"], a[href*="/p/"]';
+    var links = document.querySelectorAll(selector);
     
     for (var i = 0; i < links.length; i++) {
       var a   = links[i];
+      if (state.mode === 'posts' && isReelElement(a)) continue;
       var url = a.href.split('?')[0].replace(/\/$/, '') + '/';
       
       var views = 0, likes = 0, thumb = '';
 
-      var text = a.innerText.trim();
-      if (text) {
-        var parsedText = parseCount(text);
-        if (parsedText > 0) views = parsedText;
+      var elements = [a].concat(Array.prototype.slice.call(a.querySelectorAll('*')));
+      for (var j = 0; j < elements.length; j++) {
+        var el = elements[j];
+        if (el.tagName && el.tagName.toLowerCase() === 'img') {
+          if (!thumb && el.src) thumb = el.src;
+        }
+        var stringsToTest = [
+          el.getAttribute('alt') || '',
+          el.getAttribute('aria-label') || '',
+          el.getAttribute('title') || ''
+        ];
+        for (var k = 0; k < stringsToTest.length; k++) {
+          var str = stringsToTest[k];
+          if (!str) continue;
+          
+          var lMatch = str.match(/([\d,.]+)\s*(mil|mi|k|m|b)?\s*(likes?|curtidas?|gostos?|me\s*gusta|gefällt|j['’]aime|mi\s*piace)/i) ||
+                       str.match(/(?:outras|others)\s+([\d,.]+)\s*(mil|mi|k|m|b)?/i) ||
+                       str.match(/([\d,.]+)\s*(mil|mi|k|m|b)?\s*(?:outras|others)/i);
+          if (lMatch) {
+            var valL = parseCount(lMatch[1] + (lMatch[2] || ''));
+            if (valL > likes) likes = valL;
+          }
+          
+          var vMatch = str.match(/([\d,.]+)\s*(mil|mi|k|m|b)?\s*(plays?|views?|visualizações|reproduções|reprod)/i);
+          if (vMatch) {
+            var valV = parseCount(vMatch[1] + (vMatch[2] || ''));
+            if (valV > views) views = valV;
+          }
+        }
+        
+        var labelStr = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '');
+        if (/like|curtir|curtida|gosto|me\s*gusta|gefällt|j['’]aime|mi\s*piace/i.test(labelStr)) {
+          var parentText = el.parentElement ? el.parentElement.textContent : '';
+          var pMatch = parentText.match(/([\d,.]+)\s*(mil|mi|k|m|b)?/i);
+          if (pMatch) {
+            var valP = parseCount(pMatch[0]);
+            if (valP > likes) likes = valP;
+          }
+        }
+        if (/play|view|visualiza|reprodu/i.test(labelStr)) {
+          var parentTextV = el.parentElement ? el.parentElement.textContent : '';
+          var pvMatch = parentTextV.match(/([\d,.]+)\s*(mil|mi|k|m|b)?/i);
+          if (pvMatch) {
+            var valPV = parseCount(pvMatch[0]);
+            if (valPV > views) views = valPV;
+          }
+        }
       }
 
-      var img = a.querySelector('img');
-      if (img) {
-        thumb = img.src;
-        var alt = (img.alt || '').toLowerCase();
-        
-        var likesMatch = alt.match(/([\d,.]+)\s*(mil|mi|k|m|b)?\s*(likes|curtidas|gostos|j'aime|mi piace)/i);
-        if (likesMatch) likes = parseCount(likesMatch[1] + (likesMatch[2] || ''));
-        
-        var viewsMatch = alt.match(/([\d,.]+)\s*(mil|mi|k|m|b)?\s*(plays|views|visualizações|reproduções|reprod)/i);
-        if (viewsMatch && views === 0) views = parseCount(viewsMatch[1] + (viewsMatch[2] || ''));
+      var text = a.innerText.trim();
+      if (text) {
+        if (state.mode === 'posts') {
+          if (likes === 0) {
+            var firstNum = text.match(/([\d,.]+)\s*(mil|mi|k|m|b)?/i);
+            if (firstNum) {
+              var parsedNum = parseCount(firstNum[0]);
+              if (parsedNum > 0) likes = parsedNum;
+            }
+          }
+        } else {
+          if (views === 0) {
+            var parsedText = parseCount(text);
+            if (parsedText > 0) views = parsedText;
+          }
+        }
       }
 
       if (views > 0 || likes > 0) {
         if (state.reels[url]) {
           var r = state.reels[url];
-          if (r.views === 0 && views > 0) r.views = views;
-          if (r.likes === 0 && likes > 0) r.likes = likes;
+          if (views > (r.views || 0)) r.views = views;
+          if (likes > (r.likes || 0)) r.likes = likes;
           if (!r.thumb && thumb) r.thumb = thumb;
           continue;
         }
@@ -161,7 +227,7 @@
     _observer = new MutationObserver(function (mutations) {
       var relevant = mutations.some(function (m) {
         return Array.prototype.some.call(m.addedNodes, function (n) {
-          return n.nodeType === 1 && n.querySelector && n.querySelector('a[href*="/reel/"]');
+          return n.nodeType === 1 && n.querySelector && n.querySelector('a[href*="/reel/"], a[href*="/p/"]');
         });
       });
       if (!relevant) return;
@@ -209,7 +275,8 @@
 
       if (added > 0) {
         state.staleCycles = 0; state.bottomConfirms = 0; state.lastNewReelTime = Date.now();
-        log('+' + added + ' reels (total: ' + Object.keys(state.reels).length + ')');
+        var itemType = state.mode === 'posts' ? 'posts' : 'reels';
+        log('+' + added + ' ' + itemType + ' (total: ' + Object.keys(state.reels).length + ')');
         refreshTableIfOpen();
       } else if (!grew) {
         state.staleCycles++;
@@ -239,7 +306,14 @@
   /* ════════════════════════════════════════════════════════════
      CSV EXPORT
   ════════════════════════════════════════════════════════════ */
-  function getSorted() { return Object.values(state.reels).sort(function (a, b) { return b.views - a.views; }); }
+  function getSorted() {
+    return Object.values(state.reels).sort(function (a, b) {
+      if (state.mode === 'posts') {
+        return (b.likes || b.views) - (a.likes || a.views);
+      }
+      return b.views - a.views || b.likes - a.likes;
+    });
+  }
   function buildCSV() {
     var sorted = getSorted();
     var rows = ['Rank,URL,Shortcode,Views,Likes'];
@@ -257,7 +331,8 @@
     a.download = buildFilename();
     a.click();
     URL.revokeObjectURL(a.href);
-    log('CSV saved: ' + a.download + ' (' + Object.keys(state.reels).length + ' reels)');
+    var itemType = state.mode === 'posts' ? 'posts' : 'reels';
+    log('CSV saved: ' + a.download + ' (' + Object.keys(state.reels).length + ' ' + itemType + ')');
   }
 
   /* ════════════════════════════════════════════════════════════
@@ -268,9 +343,10 @@
   function refreshTableLiveBar() {
     if (!$tableLiveBar) return;
     var total    = Object.keys(state.reels).length;
-    var withV    = Object.values(state.reels).filter(function(r){ return r.views > 0; }).length;
+    var isPosts  = state.mode === 'posts';
+    var withV    = Object.values(state.reels).filter(function(r){ return isPosts ? (r.likes > 0 || r.views > 0) : (r.views > 0 || r.likes > 0); }).length;
     var sorted   = getSorted();
-    var maxV     = sorted.length > 0 ? sorted[0].views : 0;
+    var maxV     = sorted.length > 0 ? (isPosts ? (sorted[0].likes || sorted[0].views) : (sorted[0].views || sorted[0].likes)) : 0;
     var status   = state.finished ? 'DONE' : 'COLLECTING';
     var statusClr= state.finished ? '#60a5fa' : '#4ade80';
     var pct      = Math.min(100, (state.staleCycles / CFG.maxStaleCycles) * 100);
@@ -343,6 +419,7 @@
       Object.assign(urlEl.style, { fontSize:'11px', color:'rgba(255,255,255,.2)', marginTop:'2px', fontFamily:'"Space Mono", monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'160px' });
       textBlock.appendChild(codeEl); textBlock.appendChild(urlEl); infoWrap.appendChild(textBlock); infoCell.appendChild(infoWrap); tr.appendChild(infoCell);
 
+      var maxVal = data.length > 0 ? (state.mode === 'posts' ? (data[0].likes || data[0].views || 1) : (data[0].views || data[0].likes || 1)) : 1;
       var viewsCell = document.createElement('td');
       Object.assign(viewsCell.style, { padding:'12px 16px', textAlign:'right', background:rowBg, borderBottom:'1px solid rgba(255,255,255,.04)', verticalAlign:'middle' });
       var viewsWrap = document.createElement('div');
@@ -350,17 +427,34 @@
       var viewNum = document.createElement('div');
       viewNum.textContent = r.views > 0 ? r.views.toLocaleString('en-US') : '—';
       Object.assign(viewNum.style, { fontFamily:'"Space Mono", monospace', fontWeight:'700', fontSize:'14px', color: r.views > 0 ? '#fff' : 'rgba(255,255,255,.2)' });
-      var barWrap = document.createElement('div');
-      Object.assign(barWrap.style, { position:'relative', height:'4px', borderRadius:'2px', background:'rgba(255,255,255,.06)', overflow:'hidden', minWidth:'80px' });
-      var barFill = document.createElement('div');
-      Object.assign(barFill.style, { position:'absolute', left:'0', top:'0', height:'100%', borderRadius:'2px', width:'0%', transition:'width .5s cubic-bezier(.4,0,.2,1)', background: i === 0 ? 'linear-gradient(90deg,#fbbf24,#f59e0b)' : 'linear-gradient(90deg,#818cf8,#6366f1)' });
-      barWrap.appendChild(barFill); viewsWrap.appendChild(viewNum); viewsWrap.appendChild(barWrap); viewsCell.appendChild(viewsWrap); tr.appendChild(viewsCell);
-      setTimeout(function(bf, pct){ bf.style.width = pct + '%'; }, 50 + i*12, barFill, maxV > 0 ? (r.views / maxV * 100) : 0);
+      viewsWrap.appendChild(viewNum);
+      if (state.mode !== 'posts') {
+        var barWrap = document.createElement('div');
+        Object.assign(barWrap.style, { position:'relative', height:'4px', borderRadius:'2px', background:'rgba(255,255,255,.06)', overflow:'hidden', minWidth:'80px' });
+        var barFill = document.createElement('div');
+        Object.assign(barFill.style, { position:'absolute', left:'0', top:'0', height:'100%', borderRadius:'2px', width:'0%', transition:'width .5s cubic-bezier(.4,0,.2,1)', background: i === 0 ? 'linear-gradient(90deg,#fbbf24,#f59e0b)' : 'linear-gradient(90deg,#818cf8,#6366f1)' });
+        barWrap.appendChild(barFill); viewsWrap.appendChild(barWrap);
+        setTimeout(function(bf, pct){ bf.style.width = pct + '%'; }, 50 + i*12, barFill, maxVal > 0 ? (r.views / maxVal * 100) : 0);
+      }
+      viewsCell.appendChild(viewsWrap); tr.appendChild(viewsCell);
 
-      var likesSpan = document.createElement('span');
+      var likesCell = document.createElement('td');
+      Object.assign(likesCell.style, { padding:'12px 16px', textAlign:'right', background:rowBg, borderBottom:'1px solid rgba(255,255,255,.04)', verticalAlign:'middle' });
+      var likesWrap = document.createElement('div');
+      Object.assign(likesWrap.style, { display:'flex', flexDirection:'column', alignItems:'flex-end', gap:'5px' });
+      var likesSpan = document.createElement('div');
       likesSpan.textContent = r.likes > 0 ? r.likes.toLocaleString('en-US') : '—';
-      Object.assign(likesSpan.style, { fontFamily:'"Space Mono", monospace', fontWeight:'700', fontSize:'13px', color: r.likes > 0 ? 'rgba(248,113,113,.85)' : 'rgba(255,255,255,.15)' });
-      tr.appendChild(td(likesSpan, 'right'));
+      Object.assign(likesSpan.style, { fontFamily:'"Space Mono", monospace', fontWeight:'700', fontSize:'13px', color: r.likes > 0 ? (state.mode === 'posts' ? '#fff' : 'rgba(248,113,113,.85)') : 'rgba(255,255,255,.15)' });
+      likesWrap.appendChild(likesSpan);
+      if (state.mode === 'posts') {
+        var barWrapL = document.createElement('div');
+        Object.assign(barWrapL.style, { position:'relative', height:'4px', borderRadius:'2px', background:'rgba(255,255,255,.06)', overflow:'hidden', minWidth:'80px' });
+        var barFillL = document.createElement('div');
+        Object.assign(barFillL.style, { position:'absolute', left:'0', top:'0', height:'100%', borderRadius:'2px', width:'0%', transition:'width .5s cubic-bezier(.4,0,.2,1)', background: i === 0 ? 'linear-gradient(90deg,#fbbf24,#f59e0b)' : 'linear-gradient(90deg,#f87171,#ef4444)' });
+        barWrapL.appendChild(barFillL); likesWrap.appendChild(barWrapL);
+        setTimeout(function(bf, pct){ bf.style.width = pct + '%'; }, 50 + i*12, barFillL, maxVal > 0 ? ((r.likes || r.views) / maxVal * 100) : 0);
+      }
+      likesCell.appendChild(likesWrap); tr.appendChild(likesCell);
 
       var btnOpen = document.createElement('a'); btnOpen.href = r.url; btnOpen.target = '_blank'; btnOpen.textContent = '↗ Open';
       Object.assign(btnOpen.style, { display:'inline-block', padding:'5px 11px', borderRadius:'7px', background:'rgba(99,102,241,.12)', border:'1px solid rgba(99,102,241,.2)', color:'#a5b4fc', fontSize:'11px', fontWeight:'700', textDecoration:'none', fontFamily:'"Syne", sans-serif', transition:'all .2s' });
@@ -370,7 +464,7 @@
     if (data.length === 0) {
       var emptyRow = document.createElement('tr'), emptyCell = document.createElement('td'); emptyCell.colSpan = 5;
       Object.assign(emptyCell.style, { padding:'60px 20px', textAlign:'center', color:'rgba(255,255,255,.2)', fontSize:'14px' });
-      emptyCell.textContent = 'No reels found.'; emptyRow.appendChild(emptyCell); $tbody.appendChild(emptyRow);
+      emptyCell.textContent = state.mode === 'posts' ? 'No posts found.' : 'No reels found.'; emptyRow.appendChild(emptyCell); $tbody.appendChild(emptyRow);
     }
   }
 
@@ -413,7 +507,7 @@
     Object.assign(logo.style, { width:'32px', height:'32px', borderRadius:'10px', background:'linear-gradient(135deg,#feda77 0%,#f58529 25%,#dd2a7b 50%,#8134af 75%,#515bd4 100%)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'14px', flexShrink:'0', color:'#fff', boxShadow:'0 4px 12px rgba(221,42,123,.35)', marginRight:'4px' });
     logo.textContent = '▶';
     
-    var titleEl = document.createElement('div'); titleEl.textContent = 'Reels Sorter';
+    var titleEl = document.createElement('div'); titleEl.textContent = state.mode === 'posts' ? 'Posts Sorter' : 'Reels Sorter';
     Object.assign(titleEl.style, { fontWeight:'800', fontSize:'15px', color:'#fff', letterSpacing:'-.4px', marginRight:'4px' });
     
     var profileEl = document.createElement('div'); profileEl.textContent = state.profileName ? '@' + state.profileName : location.hostname;
@@ -445,7 +539,7 @@
 
     var searchWrap = document.createElement('div'); Object.assign(searchWrap.style, { position:'relative', display:'flex', alignItems:'center' });
     var searchIcon = document.createElement('div'); searchIcon.textContent = '⌕'; Object.assign(searchIcon.style, { position:'absolute', left:'11px', fontSize:'16px', color:'rgba(255,255,255,.25)', pointerEvents:'none', lineHeight:'1' });
-    var $search = document.createElement('input'); $search.id = '__rsSearch'; $search.placeholder = 'Filter reels…';
+    var $search = document.createElement('input'); $search.id = '__rsSearch'; $search.placeholder = state.mode === 'posts' ? 'Filter posts…' : 'Filter reels…';
     Object.assign($search.style, { background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.1)', borderRadius:'10px', color:'#e2e8f0', fontSize:'13px', padding:'8px 12px 8px 32px', outline:'none', width:'200px', fontFamily:'"Syne", sans-serif' });
     $search.oninput = function(){ refreshTableIfOpen(); };
     searchWrap.appendChild(searchIcon); searchWrap.appendChild($search);
@@ -459,8 +553,10 @@
     btnClose.onclick = closeTable;
     btns.appendChild(btnDl); btns.appendChild(btnClose);
 
+    var lblWith = state.mode === 'posts' ? 'WITH LIKES' : 'WITH VIEWS';
+    var lblTop = state.mode === 'posts' ? 'TOP LIKES' : 'TOP VIEWS';
     statsRow.appendChild(logo); statsRow.appendChild(titleEl); statsRow.appendChild(profileEl); statsRow.appendChild(liveGroup);
-    statsRow.appendChild(liveChip('TOTAL', 'total', '#fff')); statsRow.appendChild(liveChip('WITH VIEWS', 'views', '#4ade80')); statsRow.appendChild(liveChip('TOP VIEWS', 'maxviews', '#fbbf24'));
+    statsRow.appendChild(liveChip('TOTAL', 'total', '#fff')); statsRow.appendChild(liveChip(lblWith, 'views', '#4ade80')); statsRow.appendChild(liveChip(lblTop, 'maxviews', '#fbbf24'));
     statsRow.appendChild(metaEl); statsRow.appendChild(spacer); statsRow.appendChild(searchWrap); statsRow.appendChild(btns);
 
     var progressBar = document.createElement('div'); Object.assign(progressBar.style, { width:'100%', height:'3px', background:'rgba(255,255,255,.04)', position:'relative' });
@@ -473,7 +569,8 @@
     var table = document.createElement('table'); Object.assign(table.style, { width:'100%', borderCollapse:'collapse', fontSize:'13px', color:'#c9d1d9' });
     var thead = document.createElement('thead'), headRow = document.createElement('tr');
     Object.assign(headRow.style, { position:'sticky', top:'0', zIndex:'3', background:'#0d0d18', borderBottom:'1px solid rgba(255,255,255,.08)' });
-    var cols = [{ label:'#', width:'50px', align:'center' }, { label:'REEL', width:'260px', align:'left' }, { label:'VIEWS', width:'220px', align:'right' }, { label:'LIKES', width:'160px', align:'right' }, { label:'ACTION', width:'90px', align:'center' }];
+    var colName = state.mode === 'posts' ? 'POST' : 'REEL';
+    var cols = [{ label:'#', width:'50px', align:'center' }, { label:colName, width:'260px', align:'left' }, { label:'VIEWS', width:'220px', align:'right' }, { label:'LIKES', width:'160px', align:'right' }, { label:'ACTION', width:'90px', align:'center' }];
     cols.forEach(function(col){
       var th = document.createElement('th'); th.textContent = col.label;
       Object.assign(th.style, { padding:'12px 16px', fontWeight:'700', fontSize:'10px', letterSpacing:'.8px', color:'rgba(255,255,255,.25)', textAlign:col.align, width:col.width, fontFamily:'"Syne", sans-serif' });
@@ -565,7 +662,7 @@
     logo.innerHTML = '&#9654;';
     var titleWrap = el('div', { flex:'1', overflow:'hidden' });
     var titleLine = el('div', { display:'flex', alignItems:'baseline', gap:'5px', marginBottom:'2px' });
-    var titleMain = el('span', { fontWeight:'700', fontSize:'13px', color:'#fff', letterSpacing:'-.2px' }); titleMain.textContent = 'Reels Sorter';
+    var titleMain = el('span', { fontWeight:'700', fontSize:'13px', color:'#fff', letterSpacing:'-.2px' }); titleMain.textContent = state.mode === 'posts' ? 'Posts Sorter' : 'Reels Sorter';
     var vBadge = el('span', { fontSize:'9px', fontWeight:'700', color:'#515bd4', background:'rgba(81,91,212,.15)', padding:'1px 5px', borderRadius:'4px' }); vBadge.textContent = 'v7';
     titleLine.appendChild(titleMain); titleLine.appendChild(vBadge);
     $profile = el('div', { fontSize:'11px', color:'rgba(255,255,255,.35)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontFamily:'"DM Mono", monospace', fontWeight:'500' });
@@ -578,7 +675,7 @@
     var glowBg = el('div', { position:'absolute', top:'-20px', right:'-20px', width:'80px', height:'80px', borderRadius:'50%', background:'radial-gradient(circle, rgba(74,222,128,.12) 0%, transparent 70%)', pointerEvents:'none' }); countCard.appendChild(glowBg);
     var countRow = el('div', { display:'flex', alignItems:'flex-end', gap:'8px', position:'relative' });
     var countLeft = el('div', {});
-    var countLabel = el('div', { fontSize:'9px', color:'rgba(255,255,255,.3)', fontWeight:'700', letterSpacing:'.8px', marginBottom:'4px' }); countLabel.textContent = 'REELS FOUND';
+    var countLabel = el('div', { fontSize:'9px', color:'rgba(255,255,255,.3)', fontWeight:'700', letterSpacing:'.8px', marginBottom:'4px' }); countLabel.textContent = state.mode === 'posts' ? 'POSTS FOUND' : 'REELS FOUND';
     $count = el('div', { fontSize:'38px', fontWeight:'700', color:'#fff', letterSpacing:'-2px', lineHeight:'1', fontFamily:'"DM Mono", monospace', transition:'color .3s' }); $count.textContent = '0';
     countLeft.appendChild(countLabel); countLeft.appendChild($count);
     $wave = el('div', { display:'flex', alignItems:'center', gap:'3px', marginBottom:'4px', marginLeft:'auto', padding:'0 4px' });
@@ -602,7 +699,7 @@
     $bar.appendChild($barFill); body.appendChild($bar);
 
     var topSection = el('div', { marginBottom:'10px' });
-    var topLabel = el('div', { fontSize:'9px', color:'rgba(255,255,255,.25)', fontWeight:'700', letterSpacing:'.8px', marginBottom:'6px' }); topLabel.textContent = 'TOP REELS';
+    var topLabel = el('div', { fontSize:'9px', color:'rgba(255,255,255,.25)', fontWeight:'700', letterSpacing:'.8px', marginBottom:'6px' }); topLabel.textContent = state.mode === 'posts' ? 'TOP POSTS' : 'TOP REELS';
     $topList = el('div', {}); topSection.appendChild(topLabel); topSection.appendChild($topList); body.appendChild(topSection);
 
     var footer = el('div', { padding:'2px 14px 14px', display:'flex', flexDirection:'column', gap:'7px' });
@@ -632,8 +729,9 @@
   var _lastTopStr = '';
   function updateTopReels() {
     if (!$topList) return;
-    var sorted = Object.values(state.reels).filter(function(r){ return r.views > 0; }).sort(function(a,b){ return b.views - a.views; }).slice(0, 3);
-    var str = sorted.map(function(r){ return r.url + r.views; }).join('|');
+    var isPosts = state.mode === 'posts';
+    var sorted = Object.values(state.reels).filter(function(r){ return r.views > 0 || r.likes > 0; }).sort(function(a,b){ return isPosts ? ((b.likes||b.views) - (a.likes||a.views)) : ((b.views||b.likes) - (a.views||a.likes)); }).slice(0, 3);
+    var str = sorted.map(function(r){ return r.url + (r.views||0) + '_' + (r.likes||0); }).join('|');
     if (str === _lastTopStr) return; _lastTopStr = str; $topList.innerHTML = '';
     if (sorted.length === 0) {
       var empty = document.createElement('div'); Object.assign(empty.style, { fontSize:'11px', color:'rgba(255,255,255,.2)', padding:'4px 0' }); empty.textContent = 'Waiting for data...'; $topList.appendChild(empty); return;
@@ -643,7 +741,17 @@
       var rank = document.createElement('div'); Object.assign(rank.style, { width:'20px', height:'20px', borderRadius:'6px', background: i === 0 ? 'rgba(251,191,36,.15)' : 'rgba(255,255,255,.06)', color: i === 0 ? '#fbbf24' : 'rgba(255,255,255,.35)', fontSize:'10px', fontWeight:'700', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:'0', fontFamily:'"DM Mono", monospace' }); rank.textContent = '#' + (i+1);
       var info = document.createElement('div'); info.style.cssText = 'flex:1;overflow:hidden';
       var code = document.createElement('div'); Object.assign(code.style, { fontSize:'11px', color:'rgba(255,255,255,.65)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontFamily:'"DM Mono", monospace', fontWeight:'500' }); code.textContent = r.shortcode || '—';
-      var views = document.createElement('div'); Object.assign(views.style, { fontSize:'10px', color:'rgba(255,255,255,.3)', marginTop:'1px' }); views.textContent = r.views.toLocaleString('en-US') + ' views';
+      var metricText = '';
+      if (isPosts) {
+        if (r.likes > 0 && r.views > 0) metricText = r.likes.toLocaleString('en-US') + ' likes · ' + r.views.toLocaleString('en-US') + ' views';
+        else if (r.likes > 0) metricText = r.likes.toLocaleString('en-US') + ' likes';
+        else metricText = r.views.toLocaleString('en-US') + ' views';
+      } else {
+        if (r.views > 0 && r.likes > 0) metricText = r.views.toLocaleString('en-US') + ' views · ' + r.likes.toLocaleString('en-US') + ' likes';
+        else if (r.views > 0) metricText = r.views.toLocaleString('en-US') + ' views';
+        else metricText = r.likes.toLocaleString('en-US') + ' likes';
+      }
+      var views = document.createElement('div'); Object.assign(views.style, { fontSize:'10px', color:'rgba(255,255,255,.3)', marginTop:'1px' }); views.textContent = metricText;
       info.appendChild(code); info.appendChild(views);
       var link = document.createElement('a'); Object.assign(link.style, { fontSize:'9px', color:'rgba(81,91,212,.7)', textDecoration:'none', padding:'3px 7px', borderRadius:'5px', background:'rgba(81,91,212,.1)', fontWeight:'600', transition:'all .2s', flexShrink:'0' }); link.textContent = '↗'; link.href = r.url; link.target = '_blank';
       link.onmouseover = function(){ link.style.background='rgba(81,91,212,.25)'; link.style.color='#818cf8'; }; link.onmouseout  = function(){ link.style.background='rgba(81,91,212,.1)'; link.style.color='rgba(81,91,212,.7)'; };
@@ -697,7 +805,8 @@
     stopObserver();
     
     log('Finished — ' + reason);
-    log('Total: ' + Object.keys(state.reels).length + ' reels | ' + elapsed());
+    var itemType = state.mode === 'posts' ? 'posts' : 'reels';
+    log('Total: ' + Object.keys(state.reels).length + ' ' + itemType + ' | ' + elapsed());
     setStatus('DONE', 'done');
     
     if ($barFill) { $barFill.style.width = '100%'; $barFill.style.background = 'linear-gradient(90deg,#60a5fa,#818cf8)'; $barFill.style.boxShadow = '0 0 10px rgba(96,165,250,.5)'; }
@@ -725,10 +834,9 @@
   window.__reelsShowTable   = showTable;
 
   function start() {
-    if (!location.href.includes('/reels') && !location.href.includes('/reel')) {
-      var ok = confirm('[ReelsSorter] You are not on a Reels tab.\n\nCurrent URL: ' + location.href + '\nIdeal: instagram.com/USERNAME/reels/\n\nContinue anyway?');
-      if (!ok) { window.__reelsSorterRunning = false; return; }
-    }
+    var isReelsTab = location.href.includes('/reels') || location.href.includes('/reel');
+    state.mode = isReelsTab ? 'reels' : 'posts';
+    CFG.logPrefix = state.mode === 'posts' ? '[PostsSorter]' : '[ReelsSorter]';
     
     resolveProfile();
     createPanel();
