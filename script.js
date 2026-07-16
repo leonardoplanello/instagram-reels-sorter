@@ -1,15 +1,16 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
- *  INSTAGRAM REELS SORTER  v7.1
+ *  INSTAGRAM REELS & POSTS SORTER  v7.3
  *  Scrapes: URL · Views · Likes
  *  Exports: CSV ordered by views or likes
  * 
  *  FEATURES:
  *  ✓ Restored the beautiful, drag-and-drop HUD interface & Wave FX.
  *  ✓ Removed blocked Web Worker (Fixes frozen timer/0 scrolls).
- *  ✓ Ultra-robust Likes & Views extraction from DOM attributes, icons, & text.
+ *  ✓ Ultra-robust Likes & Views extraction from DOM + Network Interceptor.
+ *  ✓ Strict Shortcode Deduplication (100% unique posts/reels).
+ *  ✓ Exact separation: Posts & Carousels in Posts mode, Reels in Reels mode.
  *  ✓ Aggressive scrolling engine (reaches the true bottom).
- *  ✓ Fully translated UI and Logs to English.
  * ╔══════════════════════════════════════════════════════════════╗
  */
 (function () {
@@ -37,6 +38,7 @@
   var state = {
     mode:             'reels',
     reels:            {},
+    shortcodesMap:    {},
     scrollCount:      0,
     staleCycles:      0,
     running:          false,
@@ -101,7 +103,120 @@
   }
 
   /* ════════════════════════════════════════════════════════════
-     DOM DATA EXTRACTION (v7 Robust Logic)
+     NETWORK INTERCEPTION (v7.3 Robust Logic)
+  ════════════════════════════════════════════════════════════ */
+  function parseInstagramData(obj) {
+    if (!obj || typeof obj !== 'object') return;
+    try {
+      if (Array.isArray(obj)) {
+        for (var i = 0; i < obj.length; i++) parseInstagramData(obj[i]);
+        return;
+      }
+      var code = obj.code || obj.shortcode;
+      if (code && typeof code === 'string' && code.length >= 5) {
+        var likes = obj.like_count || obj.fb_like_count || (obj.edge_media_preview_like && obj.edge_media_preview_like.count) || (obj.edge_liked_by && obj.edge_liked_by.count) || 0;
+        var views = obj.view_count || obj.play_count || obj.video_view_count || obj.video_play_count || 0;
+        var thumb = obj.thumbnail_src || obj.display_url || (obj.image_versions2 && obj.image_versions2.candidates && obj.image_versions2.candidates[0] && obj.image_versions2.candidates[0].url) || '';
+        
+        var isReel = false;
+        if (typeof obj.is_reel_media !== 'undefined') isReel = !!obj.is_reel_media;
+        else if (obj.product_type === 'clips' || obj.product_type === 'reels' || obj.__typename === 'GraphVideo' || obj.media_type === 2) isReel = true;
+        if (obj.product_type === 'carousel_container' || obj.__typename === 'GraphSidecar' || obj.media_type === 8 || obj.carousel_media_count > 0 || obj.edge_sidecar_to_children) isReel = false;
+
+        if (!state.shortcodesMap[code]) {
+          state.shortcodesMap[code] = { likes: 0, views: 0, thumb: '', isReel: isReel };
+        }
+        if (likes > state.shortcodesMap[code].likes) state.shortcodesMap[code].likes = likes;
+        if (views > state.shortcodesMap[code].views) state.shortcodesMap[code].views = views;
+        if (thumb && !state.shortcodesMap[code].thumb) state.shortcodesMap[code].thumb = thumb;
+        if (isReel || obj.product_type === 'clips' || obj.is_reel_media) state.shortcodesMap[code].isReel = isReel;
+
+        // Strictly update existing item if already found in DOM
+        if (state.reels[code]) {
+          var r = state.reels[code];
+          if (likes > (r.likes || 0)) r.likes = likes;
+          if (views > (r.views || 0)) r.views = views;
+          if (thumb && !r.thumb) r.thumb = thumb;
+          if (typeof state.shortcodesMap[code].isReel !== 'undefined') r.isReel = state.shortcodesMap[code].isReel;
+        }
+      }
+      var keys = Object.keys(obj);
+      for (var k = 0; k < keys.length; k++) {
+        var val = obj[keys[k]];
+        if (val && typeof val === 'object') parseInstagramData(val);
+      }
+    } catch (e) {}
+  }
+
+  function startNetworkInterceptor() {
+    try {
+      var origFetch = window.fetch;
+      if (origFetch && !window.__rsFetchIntercepted) {
+        window.__rsFetchIntercepted = true;
+        window.fetch = function() {
+          return origFetch.apply(this, arguments).then(function(res) {
+            try {
+              var clone = res.clone();
+              clone.text().then(function(txt) {
+                if (!txt || txt.length < 20) return;
+                try {
+                  var json = JSON.parse(txt);
+                  parseInstagramData(json);
+                } catch(err) {
+                  var matches = txt.match(/\{.*"shortcode":.*\}|\{.*"code":.*\}/g);
+                  if (matches) {
+                    for (var m = 0; m < matches.length; m++) {
+                      try { parseInstagramData(JSON.parse(matches[m])); } catch(e2){}
+                    }
+                  }
+                }
+              });
+            } catch(e){}
+            return res;
+          });
+        };
+      }
+
+      var origXHR = window.XMLHttpRequest.prototype.open;
+      var origSend = window.XMLHttpRequest.prototype.send;
+      if (origXHR && origSend && !window.__rsXHRIntercepted) {
+        window.__rsXHRIntercepted = true;
+        window.XMLHttpRequest.prototype.send = function() {
+          this.addEventListener('load', function() {
+            try {
+              var txt = this.responseText;
+              if (txt && txt.length >= 20) {
+                try {
+                  var json = JSON.parse(txt);
+                  parseInstagramData(json);
+                } catch(err) {
+                  var matches = txt.match(/\{.*"shortcode":.*\}|\{.*"code":.*\}/g);
+                  if (matches) {
+                    for (var m = 0; m < matches.length; m++) {
+                      try { parseInstagramData(JSON.parse(matches[m])); } catch(e2){}
+                    }
+                  }
+                }
+              }
+            } catch(e){}
+          });
+          return origSend.apply(this, arguments);
+        };
+      }
+
+      try {
+        if (window._sharedData) parseInstagramData(window._sharedData);
+        if (window.__initialData) parseInstagramData(window.__initialData);
+        var scripts = document.querySelectorAll('script[type="application/json"]');
+        for (var s = 0; s < scripts.length; s++) {
+          try { parseInstagramData(JSON.parse(scripts[s].textContent)); } catch(e){}
+        }
+      } catch(e){}
+    } catch (e) {}
+  }
+
+  /* ════════════════════════════════════════════════════════════
+     DOM DATA EXTRACTION (v7.3 Robust Logic)
   ════════════════════════════════════════════════════════════ */
   function isReelElement(a) {
     if (!a || !a.href) return false;
@@ -111,7 +226,10 @@
       var el = svgs[j];
       if (el.tagName && el.tagName.toLowerCase() === 'img') continue;
       var txt = (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '') + ' ' + (el.textContent || '');
-      if (/reel|clip|clipe|vídeo do reels/i.test(txt)) return true;
+      // Match strictly Reel/Reels indicators (never match clip/clipe/carrossel/carousel)
+      if (/^reels?$|^vídeo do reels$/i.test(txt.trim()) || /\breels?\b/i.test(txt) && !/clip|clipe|carrossel|carousel/i.test(txt)) {
+        return true;
+      }
     }
     return false;
   }
@@ -123,10 +241,29 @@
     
     for (var i = 0; i < links.length; i++) {
       var a   = links[i];
-      if (state.mode === 'posts' && isReelElement(a)) continue;
       var url = a.href.split('?')[0].replace(/\/$/, '') + '/';
+      var mc  = url.match(/\/(reel|p)\/([^/]+)/);
+      if (!mc) continue;
+      var shortcode = mc[2];
+      
+      var isReel = isReelElement(a);
+      var sd = state.shortcodesMap[shortcode];
+      if (sd && typeof sd.isReel !== 'undefined') {
+        isReel = sd.isReel;
+      }
+
+      if (state.mode === 'posts') {
+        if (mc[1] === 'reel' || isReel) continue;
+      } else if (state.mode === 'reels') {
+        if (mc[1] === 'p' && !isReel) continue;
+      }
       
       var views = 0, likes = 0, thumb = '';
+      if (sd) {
+        likes = sd.likes || 0;
+        views = sd.views || 0;
+        thumb = sd.thumb || '';
+      }
 
       var elements = [a].concat(Array.prototype.slice.call(a.querySelectorAll('*')));
       for (var j = 0; j < elements.length; j++) {
@@ -195,25 +332,33 @@
         }
       }
 
-      if (views > 0 || likes > 0) {
-        if (state.reels[url]) {
-          var r = state.reels[url];
-          if (views > (r.views || 0)) r.views = views;
-          if (likes > (r.likes || 0)) r.likes = likes;
-          if (!r.thumb && thumb) r.thumb = thumb;
-          continue;
-        }
-
-        var mc = url.match(/\/(reel|p)\/([^/]+)/);
-        state.reels[url] = {
-          url:       url,
-          shortcode: mc ? mc[2] : '',
-          views:     views,
-          likes:     likes,
-          thumb:     thumb
-        };
-        added++;
+      if (state.shortcodesMap[shortcode]) {
+        if (likes > state.shortcodesMap[shortcode].likes) state.shortcodesMap[shortcode].likes = likes;
+        if (views > state.shortcodesMap[shortcode].views) state.shortcodesMap[shortcode].views = views;
+        if (thumb && !state.shortcodesMap[shortcode].thumb) state.shortcodesMap[shortcode].thumb = thumb;
+      } else {
+        state.shortcodesMap[shortcode] = { likes: likes, views: views, thumb: thumb, isReel: isReel };
       }
+
+      // STRICT SHORTCODE DEDUPLICATION
+      if (state.reels[shortcode]) {
+        var r = state.reels[shortcode];
+        if (views > (r.views || 0)) r.views = views;
+        if (likes > (r.likes || 0)) r.likes = likes;
+        if (!r.thumb && thumb) r.thumb = thumb;
+        if (url && url.includes('/p/')) r.url = url;
+        continue;
+      }
+
+      state.reels[shortcode] = {
+        url:       url,
+        shortcode: shortcode,
+        views:     views,
+        likes:     likes,
+        thumb:     thumb,
+        isReel:    isReel
+      };
+      added++;
     }
     state.totalAdded += added;
     return added;
@@ -839,6 +984,7 @@
     CFG.logPrefix = state.mode === 'posts' ? '[PostsSorter]' : '[ReelsSorter]';
     
     resolveProfile();
+    startNetworkInterceptor();
     createPanel();
     collectFromDOM();
     updatePanel(false);
